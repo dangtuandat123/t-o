@@ -98,9 +98,12 @@ class OverlayApp:
         self.rect_h = 200
         
         # AI Config
-        self.api_key = "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"
+        self.api_key1 = "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"
+        self.api_key2 = ""
+        self.api_key3 = ""
         self.ai_model = DEFAULT_AI_MODEL
         
+        self.current_key_idx = 0
         self.load_config()
         
         self.mouse5_down_time = 0
@@ -364,8 +367,10 @@ class OverlayApp:
     def call_openrouter(self, image_path=None, audio_path=None):
         if not requests:
             return "LỖI: Chưa cài thư viện requests"
-        if not self.api_key:
-            return "LỖI: Chưa nhập API Key"
+            
+        available_keys = [k.strip() for k in [self.api_key1, self.api_key2, self.api_key3] if k.strip()]
+        if not available_keys:
+            return "LỖI: Bạn chưa nhập OpenRouter API Key nào!"
 
         content = []
         if image_path:
@@ -426,103 +431,128 @@ class OverlayApp:
             ]
         }
 
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost",
-            "X-OpenRouter-Title": "OverlayApp",
-        }
+        if not hasattr(self, 'current_key_idx'):
+            self.current_key_idx = 0
 
-        try:
-            response = requests.post("https://openrouter.ai/api/v1/chat/completions", json=payload, headers=headers, timeout=45)
-            data = response.json()
-            print("\n[AI RESPONSE DUMP]", json.dumps(data, indent=2, ensure_ascii=False))
-            
-            if "choices" in data and len(data["choices"]) > 0:
-                msg_content = data["choices"][0]["message"].get("content", "")
+        for attempt in range(3):
+            if self.current_key_idx >= len(available_keys):
+                self.current_key_idx = 0
                 
-                try:
-                    if msg_content is None: msg_content = ""
+            active_key = available_keys[self.current_key_idx]
+            headers = {
+                "Authorization": f"Bearer {active_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "http://localhost",
+                "X-OpenRouter-Title": "OverlayApp",
+            }
+            
+            try:
+                print(f"[RETRY {attempt+1}] Gửi lệnh với Key #{self.current_key_idx+1} ({active_key[:8]}...)")
+                response = requests.post("https://openrouter.ai/api/v1/chat/completions", json=payload, headers=headers, timeout=45)
+                data = response.json()
+                print(f"\n[AI RESPONSE DUMP - THỬ LẦN {attempt+1}]", json.dumps(data, indent=2, ensure_ascii=False))
+                
+                if "choices" in data and len(data["choices"]) > 0:
+                    msg_content = data["choices"][0]["message"].get("content", "")
                     
-                    import re
-                    blocks = re.findall(r'```(?:json)?\s*([\s\S]*?)\s*```', msg_content)
-                    if blocks:
-                        clean = blocks[-1].strip()
-                    else:
-                        last_obj = ""
-                        stack = 0
-                        start = -1
-                        for i, char in enumerate(msg_content):
-                            if char in '{[':
-                                if stack == 0: start = i
-                                stack += 1
-                            elif char in '}]':
-                                stack -= 1
-                                if stack == 0 and start != -1:
-                                    last_obj = msg_content[start:i+1]
-                        clean = last_obj if last_obj else msg_content.strip()
-                    
-                    js = json.loads(clean)
-                    
-                    answers_list = []
-                    if isinstance(js, dict):
-                        if "answers" in js and isinstance(js["answers"], list):
-                            answers_list = js["answers"]
+                    try:
+                        if msg_content is None: msg_content = ""
+                        
+                        import re
+                        blocks = re.findall(r'```(?:json)?\s*([\s\S]*?)\s*```', msg_content)
+                        if blocks:
+                            clean = blocks[-1].strip()
                         else:
-                            answers_list = [js]
-                    elif isinstance(js, list):
-                        answers_list = js
+                            last_obj = ""
+                            stack = 0
+                            start = -1
+                            for i, char in enumerate(msg_content):
+                                if char in '{[':
+                                    if stack == 0: start = i
+                                    stack += 1
+                                elif char in '}]':
+                                    stack -= 1
+                                    if stack == 0 and start != -1:
+                                        last_obj = msg_content[start:i+1]
+                            clean = last_obj if last_obj else msg_content.strip()
                         
-                    results = []
-                    for item in answers_list:
-                        if not isinstance(item, dict): continue
-                        if "transcript" in item and item["transcript"] and str(item["transcript"]).strip().lower() != "null":
-                            print(f"[AI TRANSCRIPT] 👉 {item['transcript']}\n")
+                        js = json.loads(clean)
+                        
+                        answers_list = []
+                        if isinstance(js, dict):
+                            if "answers" in js and isinstance(js["answers"], list):
+                                answers_list = js["answers"]
+                            else:
+                                answers_list = [js]
+                        elif isinstance(js, list):
+                            answers_list = js
                             
-                        so, da = None, None
-                        for k, v in item.items():
-                            kl = str(k).lower()
-                            if 'hoi' in kl or 'number' in kl or 'socau' in kl or 'so_cau' in kl or 'cau' in kl or kl == 'id':
-                                so = str(v)
-                            # Tránh dính chữ question_text, options, ...
-                            if 'answer' in kl or 'dap_an' in kl or 'dapan' in kl or 'correct' in kl:
-                                if isinstance(v, dict): continue
-                                import re
-                                val_str = str(v).strip().upper()
-                                match_abcd = re.search(r'\b(A|B|C|D)\b', val_str)
-                                if match_abcd: da = match_abcd.group(1)
-                                else: da = val_str[:5]
+                        results = []
+                        for item in answers_list:
+                            if not isinstance(item, dict): continue
+                            if "transcript" in item and item["transcript"] and str(item["transcript"]).strip().lower() != "null":
+                                print(f"[AI TRANSCRIPT] 👉 {item['transcript']}\n")
                                 
-                        if so or da:
-                            if so and not str(so).lower().startswith("câu"): so = f"Câu {so}"
-                            results.append(f"{so or 'Câu ?'} {da or '?'}".strip())
+                            so, da = None, None
+                            for k, v in item.items():
+                                kl = str(k).lower()
+                                if 'hoi' in kl or 'number' in kl or 'socau' in kl or 'so_cau' in kl or 'cau' in kl or kl == 'id':
+                                    so = str(v)
+                                # Tránh dính chữ question_text, options, ...
+                                if 'answer' in kl or 'dap_an' in kl or 'dapan' in kl or 'correct' in kl:
+                                    if isinstance(v, dict): continue
+                                    import re
+                                    val_str = str(v).strip().upper()
+                                    match_abcd = re.search(r'\b(A|B|C|D)\b', val_str)
+                                    if match_abcd: da = match_abcd.group(1)
+                                    else: da = val_str[:5]
+                                    
+                            if so or da:
+                                if so and not str(so).lower().startswith("câu"): so = f"Câu {so}"
+                                results.append(f"{so or 'Câu ?'} {da or '?'}".strip())
+                                
+                        if not results: raise ValueError("Keys missing")
+                        return results if len(results) > 1 else results[0]
+                    except Exception:
+                        # Nếu JSON vỡ, bắt Regex chặt chẽ hơn (chỉ bắt A B C D đứng sau các từ khóa chỉ định)
+                        import re
+                        m_ans = re.search(r'(?i)(?:answer|đáp án|correct|dap an|chọn)[^A-D]*([A-D])\b', msg_content)
+                        if m_ans:
+                            ans_char = m_ans.group(1).upper()
+                            m_so = re.search(r'(?i)(?:câu|question)[^\d]*(\d+)', msg_content)
+                            return f"Câu {m_so.group(1) if m_so else '?'} {ans_char}"
                             
-                    if not results: raise ValueError("Keys missing")
-                    return results if len(results) > 1 else results[0]
-                except Exception:
-                    # Nếu JSON vỡ, bắt Regex chặt chẽ hơn (chỉ bắt A B C D đứng sau các từ khóa chỉ định)
-                    import re
-                    m_ans = re.search(r'(?i)(?:answer|đáp án|correct|dap an|chọn)[^A-D]*([A-D])\b', msg_content)
-                    if m_ans:
-                        ans_char = m_ans.group(1).upper()
-                        m_so = re.search(r'(?i)(?:câu|question)[^\d]*(\d+)', msg_content)
-                        return f"Câu {m_so.group(1) if m_so else '?'} {ans_char}"
+                        # Lưới lọc cuối (Regex tìm trơ trọi)
+                        m = re.search(r'(?i)\b(A|B|C|D)\b', msg_content[-50:]) # Ưu tiên phần kết luận
+                        if m: return f"Câu ? {m.group(1).upper()}"
                         
-                    # Lưới lọc cuối (Regex tìm trơ trọi)
-                    m = re.search(r'(?i)\b(A|B|C|D)\b', msg_content[-50:]) # Ưu tiên phần kết luận
-                    if m: return f"Câu ? {m.group(1).upper()}"
-                    # Lưới lọc cuối nếu cả Regex cũng thất bại
-                    short_msg = str(msg_content).replace('\n', ' ')
-                    return f"! LỖI JSON: {short_msg[:40].strip()}"
-            else:
-                err_obj = data.get('error', {})
-                err_str = str(err_obj)
-                if 'User not found' in err_str or '401' in err_str:
-                    return "! LỖI API: API Key bị khóa/sai. Hãy nhập Key mới ở Cài Đặt!"
-                return f"! LỖI API: {str(err_obj.get('message', err_obj))[:30]}"
-        except Exception as e:
-            print("[NETWORK ERROR]", e)
-            return "! Lỗi Mạng"
+                        # Không tìm ra = Lỗi JSON Model ngáo chữ -> Đổi Key + Retry
+                        if attempt < 2:
+                            self.current_key_idx = (self.current_key_idx + 1) % len(available_keys)
+                            time.sleep(2)
+                            continue
+                        short_msg = str(msg_content).replace('\n', ' ')
+                        return f"! LỖI JSON: {short_msg[:40].strip()}"
+                else:
+                    err_obj = data.get('error', {})
+                    err_str = str(err_obj)
+                    
+                    if attempt < 2:
+                        print(f"Lỗi API 401/429/500, tự động Switch qua Key tiếp theo...")
+                        self.current_key_idx = (self.current_key_idx + 1) % len(available_keys)
+                        time.sleep(2)
+                        continue
+                        
+                    if 'User not found' in err_str or '401' in err_str:
+                        return "! LỖI API: Cả 3 API Key đều đã chết/sai mã!"
+                    return f"! LỖI API: {str(err_obj.get('message', err_obj))[:30]}"
+            except Exception as e:
+                print(f"[NETWORK ERROR - LẦN {attempt+1}]", e)
+                if attempt < 2:
+                    self.current_key_idx = (self.current_key_idx + 1) % len(available_keys)
+                    time.sleep(2)
+                    continue
+                return "! Lỗi Mạng (Thất bại 3 lần + 3 Keys)"
 
     def process_ai(self, image_path=None, audio_path=None, restore_color=None):
         def worker():
@@ -544,16 +574,11 @@ class OverlayApp:
                             self.update_style()
                         
                     elif isinstance(ans, str):
-                        if ans.startswith("!") or ans.startswith("LỖI"):
-                            if not getattr(self, 'is_recording', False):
-                                self.text_str = ans
-                                self.update_style()
-                        else:
-                            self.text_sequence.append(ans)
-                            if not getattr(self, 'is_recording', False):
-                                self.text_index = len(self.text_sequence) - 1
-                                self.text_str = self.text_sequence[self.text_index]
-                                self.update_style()
+                        self.text_sequence.append(ans)
+                        if not getattr(self, 'is_recording', False):
+                            self.text_index = len(self.text_sequence) - 1
+                            self.text_str = self.text_sequence[self.text_index]
+                            self.update_style()
                 self.root.after(0, update_ui)
         threading.Thread(target=worker, daemon=True).start()
 
@@ -639,7 +664,12 @@ class OverlayApp:
                     self.rect_w = data.get("rect_w", 300)
                     self.rect_h = data.get("rect_h", 200)
                     
-                    self.api_key = data.get("api_key", "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")
+                    # Cứu key cũ nếu bản save json phiên bản trước chỉ có 1 biến api_key
+                    old_key = data.get("api_key", "")
+                    self.api_key1 = data.get("api_key1", old_key if old_key else "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")
+                    self.api_key2 = data.get("api_key2", "")
+                    self.api_key3 = data.get("api_key3", "")
+                    
                     self.ai_model = data.get("ai_model", DEFAULT_AI_MODEL)
             except Exception:
                 pass
@@ -658,7 +688,9 @@ class OverlayApp:
             "rect_y": self.rect_y,
             "rect_w": self.rect_w,
             "rect_h": self.rect_h,
-            "api_key": self.api_key,
+            "api_key1": self.api_key1,
+            "api_key2": self.api_key2,
+            "api_key3": self.api_key3,
             "ai_model": self.ai_model
         }
         try:
@@ -823,14 +855,22 @@ class OverlayApp:
         color_btn_r.config(command=choose_color_rect)
 
         # -- TAB AI --
-        tk.Label(tab_ai, text="OpenRouter API Key:").grid(row=0, column=0, padx=15, pady=10, sticky='w')
-        api_var = tk.StringVar(value=self.api_key)
-        tk.Entry(tab_ai, textvariable=api_var, width=22, show='*').grid(row=0, column=1, sticky='w')
+        tk.Label(tab_ai, text="OpenRouter API Key 1:").grid(row=0, column=0, padx=15, pady=5, sticky='w')
+        api_var1 = tk.StringVar(value=self.api_key1)
+        tk.Entry(tab_ai, textvariable=api_var1, width=22, show='*').grid(row=0, column=1, sticky='w')
         
-        tk.Label(tab_ai, text="AI Model (OpenRouter):").grid(row=1, column=0, padx=15, pady=10, sticky='w')
+        tk.Label(tab_ai, text="OpenRouter API Key 2:").grid(row=1, column=0, padx=15, pady=5, sticky='w')
+        api_var2 = tk.StringVar(value=self.api_key2)
+        tk.Entry(tab_ai, textvariable=api_var2, width=22, show='*').grid(row=1, column=1, sticky='w')
+        
+        tk.Label(tab_ai, text="OpenRouter API Key 3:").grid(row=2, column=0, padx=15, pady=5, sticky='w')
+        api_var3 = tk.StringVar(value=self.api_key3)
+        tk.Entry(tab_ai, textvariable=api_var3, width=22, show='*').grid(row=2, column=1, sticky='w')
+        
+        tk.Label(tab_ai, text="AI Model (OpenRouter):").grid(row=3, column=0, padx=15, pady=10, sticky='w')
         model_var = tk.StringVar(value=self.ai_model)
-        model_cb = ttk.Combobox(tab_ai, textvariable=model_var, values=AVAILABLE_MODELS, width=28)
-        model_cb.grid(row=1, column=1, sticky='w')
+        model_cb = ttk.Combobox(tab_ai, textvariable=model_var, values=AVAILABLE_MODELS, width=21)
+        model_cb.grid(row=3, column=1, sticky='w')
 
         def apply_settings():
             try:
@@ -845,7 +885,10 @@ class OverlayApp:
                 self.rect_y = int(ry_var.get())
                 self.rect_w = int(rw_var.get())
                 self.rect_h = int(rh_var.get())
-                self.api_key = api_var.get().strip()
+                
+                self.api_key1 = api_var1.get().strip()
+                self.api_key2 = api_var2.get().strip()
+                self.api_key3 = api_var3.get().strip()
                 
                 alpha_val = float(ralpha_var.get())
                 if alpha_val < 0.0: alpha_val = 0.0
