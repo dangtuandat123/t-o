@@ -27,6 +27,7 @@ CONFIG_FILE = "config.json"
 DEFAULT_AI_MODEL = "xiaomi/mimo-v2-omni"
 AVAILABLE_MODELS = [
     "xiaomi/mimo-v2-omni",
+    "google/gemini-3-flash-preview",
     "google/gemini-3.1-flash-lite-preview",
     "google/gemini-3.1-pro-preview"
 ]
@@ -219,7 +220,6 @@ class OverlayApp:
         self.old_text_record = self.text_str
         self.old_color_record = self.text_color
         self.text_str = "🎙"
-        self.text_color = "orange"
         self.update_text_render()
         
         try:
@@ -268,7 +268,6 @@ class OverlayApp:
                         old_color = getattr(self, 'old_color_record', "red")
                         def ui_wait():
                             self.text_str = "⏳"
-                            self.text_color = "cyan"
                             self.update_text_render()
                         self.root.after(0, ui_wait)
                         
@@ -372,7 +371,6 @@ class OverlayApp:
                 old_text = self.text_str
                 old_color = self.text_color
                 self.text_str = "⏳" # Báo hiệu đang xử lý AI
-                self.text_color = "cyan"
                 self.update_text_render()
                 
                 self.process_ai(image_path=filepath, restore_color=old_color)
@@ -758,6 +756,15 @@ class OverlayApp:
     def on_setting(self, icon, item):
         self.root.after(0, self.open_settings)
 
+    def on_reset_text(self, icon, item):
+        def do_reset():
+            self.text_sequence = []
+            self.text_index = -1
+            self.text_str = "..."
+            self.update_style()
+            print("[RESET] 🗑️ Đã xóa toàn bộ lịch sử text!")
+        self.root.after(0, do_reset)
+
     def create_model_menu(self):
         def set_model(model_name):
             def inner(icon, item):
@@ -782,6 +789,7 @@ class OverlayApp:
         menu = pystray.Menu(
             pystray.MenuItem('⚡ Chuyển Đổi Model Nhanh', self.create_model_menu()),
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem('🗑️ Reset Text', self.on_reset_text),
             pystray.MenuItem('Cài Đặt', self.on_setting),
             pystray.MenuItem('Thoát', self.on_quit)
         )
