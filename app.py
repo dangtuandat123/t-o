@@ -398,14 +398,14 @@ class OverlayApp:
             
         text_prompt = "Identify ALL complete English multiple-choice questions (grammar, vocabulary, reading, TOEIC listening, error identification) in the media and solve them. Output ONLY a raw JSON object containing an 'answers' array. Example: {\"answers\": [{\"cau_hoi\": \"12\", \"dap_an\": \"A\"}, {\"cau_hoi\": \"13\", \"dap_an\": \"B\"}]}"
         if audio_path:
-            text_prompt = "Listen to the TOEIC audio carefully. If an image is provided, thoroughly analyze the image context (e.g., TOEIC Part 1 Graphic or Part 3/4 Maps) to match the spoken audio. First, write a brief 'transcript'. Then, identify ALL correct TOEIC Listening answers. Output ONLY a raw JSON object containing an 'answers' array. Example: {\"answers\": [{\"transcript\": \"The man is walking...\", \"cau_hoi\": \"12\", \"dap_an\": \"A\"}]}"
+            text_prompt = "Listen to the TOEIC audio carefully. An image is also attached but it MIGHT be irrelevant or blank. ONLY use the image if it contains explicit TOEIC visuals (e.g., Part 1 photos or Part 3/4 graphics). Otherwise, rely purely on the audio. First, write a brief 'transcript'. Then, identify ALL correct TOEIC Listening answers. Output ONLY a JSON object containing an 'answers' array: {\"answers\": [{\"transcript\": \"...\", \"cau_hoi\": \"12\", \"dap_an\": \"A\"}]}"
 
         content.append({
             "type": "text",
             "text": text_prompt
         })
         
-        system_role = "You are an expert English Language teacher and advanced AI data-extraction engine dedicated EXCLUSIVELY to solving English multiple-choice exercises and TOEIC Listening tests.\n\nSTRICT RULES:\n1. If the input contains multiple complete questions, you MUST solve ALL of them. Ignore ONLY the incomplete/cropped questions.\n2. Carefully analyze grammar, vocabulary context, TOEIC listening comprehension patterns, or error pinpointing before selecting the answers.\n3. NO conversational text or markdown formatting. Do not explain your reasoning.\n4. Output ONLY a single raw JSON object with an 'answers' array exactly like this:\n{\"answers\": [{\"transcript\": \"<Optional audio transcript>\", \"cau_hoi\": \"<Question ID>\", \"dap_an\": \"<A, B, C, or D>\"}, ...]}\n\nViolating these rules will cause a system failure. Proceed."
+        system_role = "You are an expert English Language teacher and advanced AI data-extraction engine dedicated EXCLUSIVELY to solving English multiple-choice exercises and TOEIC Listening tests.\n\nSTRICT RULES:\n1. If the input contains multiple complete questions, you MUST solve ALL of them. Ignore ONLY the incomplete/cropped questions.\n2. Carefully analyze grammar, vocabulary context, TOEIC listening comprehension patterns, or error pinpointing before selecting the answers. Note that attached images during audio tasks might be irrelevant; prioritize audio if the image lacks context.\n3. NO conversational text or markdown formatting. Do not explain your reasoning.\n4. Output ONLY a single raw JSON object with an 'answers' array exactly like this:\n{\"answers\": [{\"transcript\": \"<Optional audio transcript>\", \"cau_hoi\": \"<Question ID>\", \"dap_an\": \"<A, B, C, or D>\"}, ...]}\n\nViolating these rules will cause a system failure. Proceed."
         
         payload = {
             "model": self.ai_model,
@@ -442,13 +442,27 @@ class OverlayApp:
                 msg_content = data["choices"][0]["message"].get("content", "")
                 
                 try:
-                    # Dọn dẹp rác Markdown nếu AI tự ý chèn thêm
-                    clean = msg_content.strip()
-                    if clean.startswith("```json"): clean = clean[7:]
-                    elif clean.startswith("```"): clean = clean[3:]
-                    if clean.endswith("```"): clean = clean[:-3]
+                    if msg_content is None: msg_content = ""
                     
-                    js = json.loads(clean.strip())
+                    import re
+                    blocks = re.findall(r'```(?:json)?\s*([\s\S]*?)\s*```', msg_content)
+                    if blocks:
+                        clean = blocks[-1].strip()
+                    else:
+                        last_obj = ""
+                        stack = 0
+                        start = -1
+                        for i, char in enumerate(msg_content):
+                            if char in '{[':
+                                if stack == 0: start = i
+                                stack += 1
+                            elif char in '}]':
+                                stack -= 1
+                                if stack == 0 and start != -1:
+                                    last_obj = msg_content[start:i+1]
+                        clean = last_obj if last_obj else msg_content.strip()
+                    
+                    js = json.loads(clean)
                     
                     answers_list = []
                     if isinstance(js, dict):
@@ -497,9 +511,9 @@ class OverlayApp:
                     # Lưới lọc cuối (Regex tìm trơ trọi)
                     m = re.search(r'(?i)\b(A|B|C|D)\b', msg_content[-50:]) # Ưu tiên phần kết luận
                     if m: return f"Câu ? {m.group(1).upper()}"
-                    
-                    short_msg = msg_content.replace('\n', ' ')
-                    return short_msg[:50].strip()
+                    # Lưới lọc cuối nếu cả Regex cũng thất bại
+                    short_msg = str(msg_content).replace('\n', ' ')
+                    return f"! LỖI JSON: {short_msg[:40].strip()}"
             else:
                 err_obj = data.get('error', {})
                 err_str = str(err_obj)
@@ -515,26 +529,31 @@ class OverlayApp:
             ans = self.call_openrouter(image_path, audio_path)
             if ans:
                 def update_ui():
-                    if restore_color:
+                    if restore_color and not getattr(self, 'is_recording', False):
                         self.text_color = restore_color
                     
                     if isinstance(ans, list):
                         start_idx = len(self.text_sequence)
                         for a in ans:
                             self.text_sequence.append(a)
-                        self.text_index = start_idx # Trỏ ngay về câu đầu tiên trong bộ mới giải
-                        self.text_str = self.text_sequence[self.text_index]
-                        self.update_style()
+                        
+                        # Không giật quyền vẽ màn hình nếu user đang bấm Mic thu âm câu tiếp theo
+                        if not getattr(self, 'is_recording', False):
+                            self.text_index = start_idx
+                            self.text_str = self.text_sequence[self.text_index]
+                            self.update_style()
                         
                     elif isinstance(ans, str):
                         if ans.startswith("!") or ans.startswith("LỖI"):
-                            self.text_str = ans
-                            self.update_style()
+                            if not getattr(self, 'is_recording', False):
+                                self.text_str = ans
+                                self.update_style()
                         else:
                             self.text_sequence.append(ans)
-                            self.text_index = len(self.text_sequence) - 1
-                            self.text_str = self.text_sequence[self.text_index]
-                            self.update_style()
+                            if not getattr(self, 'is_recording', False):
+                                self.text_index = len(self.text_sequence) - 1
+                                self.text_str = self.text_sequence[self.text_index]
+                                self.update_style()
                 self.root.after(0, update_ui)
         threading.Thread(target=worker, daemon=True).start()
 
