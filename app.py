@@ -234,7 +234,6 @@ class OverlayApp:
                 while getattr(self, 'is_recording', False):
                     try:
                         data = self.audio_stream.read(1024)
-                        # Giảm hệ số khuếch đại từ 4.0 (dễ rè/vỡ tiếng) xuống 2.5 để tiếng trong vắt hơn
                         amplified_data = audioop.mul(data, 2, 2.5)
                         self.audio_frames.append(amplified_data)
                     except Exception:
@@ -264,7 +263,6 @@ class OverlayApp:
                         wf.close()
                         print(f"Đã lưu ghi âm: {filename}")
                         
-                        # Set UI chờ
                         old_color = getattr(self, 'old_color_record', "red")
                         def ui_wait():
                             self.text_str = "⏳"
@@ -278,14 +276,12 @@ class OverlayApp:
                         )
                     except Exception as e:
                         print("Lỗi lưu file:", e)
-                        # Rollback UI khi lưu WAV thất bại
                         def ui_rollback_save():
                             self.text_str = getattr(self, 'old_text_record', "...")
                             self.text_color = getattr(self, 'old_color_record', "red")
                             self.update_text_render()
                         self.root.after(0, ui_rollback_save)
                 else:
-                    # Thu âm quá ngắn (0 frame) → Phục hồi UI về trạng thái cũ
                     print("[WARN] Thu âm rỗng, bỏ qua.")
                     def ui_rollback_empty():
                         self.text_str = getattr(self, 'old_text_record', "...")
@@ -297,7 +293,6 @@ class OverlayApp:
         except Exception as e:
             print("Lỗi mở Mic:", e)
             self.is_recording = False
-            # Rollback UI nếu Mic lỗi (Vì Thread chưa được tạo nên không ai tự dọn dẹp)
             if hasattr(self, 'old_text_record'):
                 self.text_str = self.old_text_record
                 self.text_color = getattr(self, 'old_color_record', "red")
@@ -311,8 +306,6 @@ class OverlayApp:
             return
         
         # QUAN TRỌNG: Chụp ảnh TRƯỚC rồi mới hạ cờ is_recording
-        # Nếu hạ cờ trước, Recording Thread sẽ thoát vòng lặp và đọc pending_audio_image_path
-        # trước khi Main Thread kịp chụp ảnh xong → mất ảnh (Race Condition)
         self.pending_audio_image_path = None
         
         if self.rect_w > 0 and self.rect_h > 0:
@@ -341,7 +334,7 @@ class OverlayApp:
                 if hidden_rect and getattr(self, 'rect_enabled', False):
                     self.rect_win.deiconify()
         
-        # HẠ CỜ SAU CÙNG - Recording Thread giờ mới được phép thoát vòng lặp
+        # HẠ CỜ SAU CÙNG
         self.is_recording = False
 
     def take_screenshot(self):
@@ -368,9 +361,8 @@ class OverlayApp:
                 filepath = os.path.join(os.getcwd(), "screenshots", f"capture_{timestamp}.png")
                 img.save(filepath)
                 
-                old_text = self.text_str
                 old_color = self.text_color
-                self.text_str = "⏳" # Báo hiệu đang xử lý AI
+                self.text_str = "⏳"
                 self.update_text_render()
                 
                 self.process_ai(image_path=filepath, restore_color=old_color)
@@ -419,16 +411,51 @@ class OverlayApp:
         if not content:
             return "! Lỗi: Không có file Ảnh/Âm thanh"
             
-        text_prompt = "Identify ALL complete English multiple-choice questions (grammar, vocabulary, reading, TOEIC listening, error identification) in the media and solve them. Output ONLY a raw JSON object containing an 'answers' array. Example: {\"answers\": [{\"cau_hoi\": \"12\", \"dap_an\": \"A\"}, {\"cau_hoi\": \"13\", \"dap_an\": \"B\"}]}"
+        text_prompt = (
+            "Identify ALL complete English multiple-choice questions in the image. "
+            "For EACH question, internally reason step-by-step: "
+            "(1) What grammar rule, vocabulary pattern, or reading comprehension skill is tested? "
+            "(2) Eliminate obviously wrong options first. "
+            "(3) Choose the BEST answer among remaining options. "
+            'Output ONLY a JSON object: '
+            '{"answers": [{"cau_hoi": "12", "dap_an": "A"}, ...]}'
+        )
         if audio_path:
-            text_prompt = "Listen to the TOEIC audio carefully. An image is also attached but it MIGHT be irrelevant or blank. ONLY use the image if it contains explicit TOEIC visuals (e.g., Part 1 photos or Part 3/4 graphics). Otherwise, rely purely on the audio. First, write a brief 'transcript'. Then, identify ALL correct TOEIC Listening answers. Output ONLY a JSON object containing an 'answers' array: {\"answers\": [{\"transcript\": \"...\", \"cau_hoi\": \"12\", \"dap_an\": \"A\"}]}"
+            text_prompt = (
+                "Listen to the TOEIC audio VERY carefully, word by word. "
+                "An image MAY be attached — ONLY use it if it shows Part 1 photos or Part 3/4 printed questions/graphics. Otherwise ignore the image entirely. "
+                "For EACH question: "
+                "(1) Transcribe the EXACT words you hear. "
+                "(2) Identify paraphrases and distractors — TOEIC often uses synonyms/rephrasing in correct answers. "
+                "(3) Watch out for traps: similar-sounding words, partial truths, and options that repeat audio words but have wrong meaning. "
+                "(4) Select the answer that BEST matches the MEANING of what was said, not just the surface words. "
+                'Output ONLY a JSON object: '
+                '{"answers": [{"transcript": "...", "cau_hoi": "1", "dap_an": "A"}, ...]}'
+            )
 
         content.append({
             "type": "text",
             "text": text_prompt
         })
         
-        system_role = "You are an expert English Language teacher and advanced AI data-extraction engine dedicated EXCLUSIVELY to solving English multiple-choice exercises and TOEIC Listening tests.\n\nSTRICT RULES:\n1. If the input contains multiple complete questions, you MUST solve ALL of them. Ignore ONLY the incomplete/cropped questions.\n2. Carefully analyze grammar, vocabulary context, TOEIC listening comprehension patterns, or error pinpointing before selecting the answers. Note that attached images during audio tasks might be irrelevant; prioritize audio if the image lacks context.\n3. NO conversational text or markdown formatting. Do not explain your reasoning.\n4. Output ONLY a single raw JSON object with an 'answers' array exactly like this:\n{\"answers\": [{\"transcript\": \"<Optional audio transcript>\", \"cau_hoi\": \"<Question ID>\", \"dap_an\": \"<A, B, C, or D>\"}, ...]}\n\nViolating these rules will cause a system failure. Proceed."
+        system_role = (
+            "You are a TOEIC 990-score expert and English language master. "
+            "Your task is to solve English multiple-choice exercises with MAXIMUM accuracy.\n\n"
+            "THINKING PROCESS (internal, do not output):\n"
+            "- Read/listen to the ENTIRE context before answering ANY question.\n"
+            "- For grammar: identify the exact rule (tense, subject-verb agreement, relative clause, conditional, etc.).\n"
+            "- For vocabulary: consider collocations, context clues, and word families.\n"
+            "- For TOEIC Listening: focus on KEY INFORMATION (who, what, where, when, why, how). "
+            "Be aware that correct answers often PARAPHRASE the audio using synonyms, NOT repeat exact words.\n"
+            "- For Part 1: describe what you SEE in the photo, then match to audio descriptions.\n"
+            "- For Part 2: the correct response ANSWERS the question logically; reject responses that merely repeat words.\n"
+            "- For Part 3&4: read printed questions FIRST (if visible in image), then listen for specific details.\n\n"
+            "OUTPUT RULES:\n"
+            "1. Solve ALL complete questions. Skip only incomplete/cropped ones.\n"
+            "2. Output ONLY a single raw JSON object, no markdown, no explanation:\n"
+            '{"answers": [{"transcript": "<optional>", "cau_hoi": "<ID>", "dap_an": "<A/B/C/D>"}]}\n'
+            "3. Violating output format = system crash."
+        )
         
         payload = {
             "model": self.ai_model,
@@ -516,7 +543,6 @@ class OverlayApp:
                                 kl = str(k).lower()
                                 if 'hoi' in kl or 'number' in kl or 'socau' in kl or 'so_cau' in kl or 'cau' in kl or kl == 'id':
                                     so = str(v)
-                                # Tránh dính chữ question_text, options, ...
                                 if 'answer' in kl or 'dap_an' in kl or 'dapan' in kl or 'correct' in kl:
                                     if isinstance(v, dict): continue
                                     import re
@@ -531,7 +557,6 @@ class OverlayApp:
                         if not results: raise ValueError("Keys missing")
                         return results if len(results) > 1 else results[0]
                     except Exception:
-                        # Nếu JSON vỡ, bắt Regex chặt chẽ hơn (chỉ bắt A B C D đứng sau các từ khóa chỉ định)
                         import re
                         m_ans = re.search(r'(?i)(?:answer|đáp án|correct|dap an|chọn)[^A-D]*([A-D])\b', msg_content)
                         if m_ans:
@@ -539,11 +564,9 @@ class OverlayApp:
                             m_so = re.search(r'(?i)(?:câu|question)[^\d]*(\d+)', msg_content)
                             return f"{m_so.group(1) if m_so else '?'} {ans_char}"
                             
-                        # Lưới lọc cuối (Regex tìm trơ trọi)
-                        m = re.search(r'(?i)\b(A|B|C|D)\b', msg_content[-50:]) # Ưu tiên phần kết luận
+                        m = re.search(r'(?i)\b(A|B|C|D)\b', msg_content[-50:])
                         if m: return f"? {m.group(1).upper()}"
                         
-                        # Không tìm ra = Lỗi JSON Model ngáo chữ -> Đổi Key + Retry
                         if attempt < 2:
                             self.current_key_idx = (self.current_key_idx + 1) % len(available_keys)
                             time.sleep(2)
@@ -584,7 +607,6 @@ class OverlayApp:
                         for a in ans:
                             self.text_sequence.append(a)
                         
-                        # Không giật quyền vẽ màn hình nếu user đang bấm Mic thu âm câu tiếp theo
                         if not getattr(self, 'is_recording', False):
                             self.text_index = start_idx
                             self.text_str = self.text_sequence[self.text_index]
@@ -681,7 +703,6 @@ class OverlayApp:
                     self.rect_w = data.get("rect_w", 300)
                     self.rect_h = data.get("rect_h", 200)
                     
-                    # Cứu key cũ nếu bản save json phiên bản trước chỉ có 1 biến api_key
                     old_key = data.get("api_key", "")
                     self.api_key1 = data.get("api_key1", old_key if old_key else "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")
                     self.api_key2 = data.get("api_key2", "")
