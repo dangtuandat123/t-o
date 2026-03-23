@@ -296,17 +296,20 @@ class OverlayApp:
     def stop_recording(self):
         if not getattr(self, 'is_recording', False):
             return
-            
-        self.is_recording = False
+        
+        # QUAN TRỌNG: Chụp ảnh TRƯỚC rồi mới hạ cờ is_recording
+        # Nếu hạ cờ trước, Recording Thread sẽ thoát vòng lặp và đọc pending_audio_image_path
+        # trước khi Main Thread kịp chụp ảnh xong → mất ảnh (Race Condition)
         self.pending_audio_image_path = None
         
-        # Chụp màn hình (Main Thread) ngay lúc nhả chuột để đính kèm vào AI chung với Audio
         if self.rect_w > 0 and self.rect_h > 0:
-            if getattr(self, 'rect_enabled', False):
-                self.rect_win.withdraw()
-            self.root.update()
-            
+            hidden_rect = False
             try:
+                if getattr(self, 'rect_enabled', False):
+                    self.rect_win.withdraw()
+                    hidden_rect = True
+                self.root.update()
+                
                 x1, y1 = self.rect_x, self.rect_y
                 x2, y2 = x1 + self.rect_w, y1 + self.rect_h
                 try:
@@ -315,15 +318,18 @@ class OverlayApp:
                 except TypeError:
                     img = ImageGrab.grab(bbox=(x1, y1, x2, y2))
                     
-                if getattr(self, 'rect_enabled', False):
-                    self.rect_win.deiconify()
-                    
                 os.makedirs("screenshots", exist_ok=True)
                 t_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 self.pending_audio_image_path = os.path.join(os.getcwd(), "screenshots", f"scr_{t_str}.png")
                 img.save(self.pending_audio_image_path)
             except Exception as e:
                 print("Lỗi chụp màn hình kèm Audio:", e)
+            finally:
+                if hidden_rect and getattr(self, 'rect_enabled', False):
+                    self.rect_win.deiconify()
+        
+        # HẠ CỜ SAU CÙNG - Recording Thread giờ mới được phép thoát vòng lặp
+        self.is_recording = False
 
     def take_screenshot(self):
         if self.rect_w <= 0 or self.rect_h <= 0:
