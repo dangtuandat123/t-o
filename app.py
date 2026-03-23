@@ -528,8 +528,7 @@ class OverlayApp:
                                     else: da = val_str[:5]
                                     
                             if so or da:
-                                if so and not str(so).lower().startswith("câu"): so = f"Câu {so}"
-                                results.append(f"{so or 'Câu ?'} {da or '?'}".strip())
+                                results.append(f"{so or '?'} {da or '?'}".strip())
                                 
                         if not results: raise ValueError("Keys missing")
                         return results if len(results) > 1 else results[0]
@@ -540,11 +539,11 @@ class OverlayApp:
                         if m_ans:
                             ans_char = m_ans.group(1).upper()
                             m_so = re.search(r'(?i)(?:câu|question)[^\d]*(\d+)', msg_content)
-                            return f"Câu {m_so.group(1) if m_so else '?'} {ans_char}"
+                            return f"{m_so.group(1) if m_so else '?'} {ans_char}"
                             
                         # Lưới lọc cuối (Regex tìm trơ trọi)
                         m = re.search(r'(?i)\b(A|B|C|D)\b', msg_content[-50:]) # Ưu tiên phần kết luận
-                        if m: return f"Câu ? {m.group(1).upper()}"
+                        if m: return f"? {m.group(1).upper()}"
                         
                         # Không tìm ra = Lỗi JSON Model ngáo chữ -> Đổi Key + Retry
                         if attempt < 2:
