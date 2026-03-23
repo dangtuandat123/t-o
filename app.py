@@ -364,9 +364,9 @@ class OverlayApp:
                 self.process_ai(image_path=filepath, restore_color=old_color)
             except Exception as e:
                 print("Lỗi chụp ảnh:", e)
-                
-            if self.rect_enabled:
-                self.rect_win.deiconify()
+            finally:
+                if self.rect_enabled:
+                    self.rect_win.deiconify()
                 
         self.root.after(100, do_capture)
 
@@ -782,7 +782,7 @@ class OverlayApp:
 
         self.settings_win = tk.Toplevel(self.root)
         self.settings_win.title("Cài đặt Overlay")
-        self.settings_win.geometry("380x380")
+        self.settings_win.geometry("420x420")
         self.settings_win.resizable(False, False)
         self.settings_win.attributes('-topmost', True)
         
