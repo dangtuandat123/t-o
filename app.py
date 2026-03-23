@@ -279,6 +279,20 @@ class OverlayApp:
                         )
                     except Exception as e:
                         print("Lỗi lưu file:", e)
+                        # Rollback UI khi lưu WAV thất bại
+                        def ui_rollback_save():
+                            self.text_str = getattr(self, 'old_text_record', "...")
+                            self.text_color = getattr(self, 'old_color_record', "red")
+                            self.update_text_render()
+                        self.root.after(0, ui_rollback_save)
+                else:
+                    # Thu âm quá ngắn (0 frame) → Phục hồi UI về trạng thái cũ
+                    print("[WARN] Thu âm rỗng, bỏ qua.")
+                    def ui_rollback_empty():
+                        self.text_str = getattr(self, 'old_text_record', "...")
+                        self.text_color = getattr(self, 'old_color_record', "red")
+                        self.update_text_render()
+                    self.root.after(0, ui_rollback_empty)
                         
             threading.Thread(target=record_thread, daemon=True).start()
         except Exception as e:
