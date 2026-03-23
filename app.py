@@ -24,7 +24,12 @@ except ImportError:
     requests = None
 
 CONFIG_FILE = "config.json"
-DEFAULT_AI_MODEL = "google/gemini-3.1-flash-lite-preview"
+DEFAULT_AI_MODEL = "xiaomi/mimo-v2-omni"
+AVAILABLE_MODELS = [
+    "xiaomi/mimo-v2-omni",
+    "google/gemini-3.1-flash-lite-preview",
+    "google/gemini-3.1-pro-preview"
+]
 
 if sys.platform == 'win32':
     try:
@@ -264,7 +269,11 @@ class OverlayApp:
                             self.update_text_render()
                         self.root.after(0, ui_wait)
                         
-                        self.process_ai(audio_path=filename, restore_color=old_color)
+                        self.process_ai(
+                            image_path=getattr(self, 'pending_audio_image_path', None),
+                            audio_path=filename, 
+                            restore_color=old_color
+                        )
                     except Exception as e:
                         print("Lỗi lưu file:", e)
                         
@@ -282,9 +291,36 @@ class OverlayApp:
                 except Exception: pass
 
     def stop_recording(self):
-        if getattr(self, 'is_recording', False):
-            # Nháy cờ False để luồng ghi âm tự động thoát và xử lý dọn dẹp
-            self.is_recording = False
+        if not getattr(self, 'is_recording', False):
+            return
+            
+        self.is_recording = False
+        self.pending_audio_image_path = None
+        
+        # Chụp màn hình (Main Thread) ngay lúc nhả chuột để đính kèm vào AI chung với Audio
+        if self.rect_w > 0 and self.rect_h > 0:
+            if getattr(self, 'rect_enabled', False):
+                self.rect_win.withdraw()
+            self.root.update()
+            
+            try:
+                x1, y1 = self.rect_x, self.rect_y
+                x2, y2 = x1 + self.rect_w, y1 + self.rect_h
+                try:
+                    from PIL import ImageGrab
+                    img = ImageGrab.grab(bbox=(x1, y1, x2, y2), all_screens=True)
+                except TypeError:
+                    img = ImageGrab.grab(bbox=(x1, y1, x2, y2))
+                    
+                if getattr(self, 'rect_enabled', False):
+                    self.rect_win.deiconify()
+                    
+                os.makedirs("screenshots", exist_ok=True)
+                t_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                self.pending_audio_image_path = os.path.join(os.getcwd(), "screenshots", f"scr_{t_str}.png")
+                img.save(self.pending_audio_image_path)
+            except Exception as e:
+                print("Lỗi chụp màn hình kèm Audio:", e)
 
     def take_screenshot(self):
         if self.rect_w <= 0 or self.rect_h <= 0:
@@ -362,7 +398,7 @@ class OverlayApp:
             
         text_prompt = "Identify ALL complete English multiple-choice questions (grammar, vocabulary, reading, TOEIC listening, error identification) in the media and solve them. Output ONLY a raw JSON object containing an 'answers' array. Example: {\"answers\": [{\"cau_hoi\": \"12\", \"dap_an\": \"A\"}, {\"cau_hoi\": \"13\", \"dap_an\": \"B\"}]}"
         if audio_path:
-            text_prompt = "Listen to the TOEIC audio carefully. First, write a brief 'transcript'. Then, identify ALL correct TOEIC Listening answers. Output ONLY a raw JSON object containing an 'answers' array. Example: {\"answers\": [{\"transcript\": \"The man is walking...\", \"cau_hoi\": \"12\", \"dap_an\": \"A\"}]}"
+            text_prompt = "Listen to the TOEIC audio carefully. If an image is provided, thoroughly analyze the image context (e.g., TOEIC Part 1 Graphic or Part 3/4 Maps) to match the spoken audio. First, write a brief 'transcript'. Then, identify ALL correct TOEIC Listening answers. Output ONLY a raw JSON object containing an 'answers' array. Example: {\"answers\": [{\"transcript\": \"The man is walking...\", \"cau_hoi\": \"12\", \"dap_an\": \"A\"}]}"
 
         content.append({
             "type": "text",
@@ -465,8 +501,11 @@ class OverlayApp:
                     short_msg = msg_content.replace('\n', ' ')
                     return short_msg[:50].strip()
             else:
-                error_msg = str(data.get('error', 'Unknown'))
-                return f"! Cấm Truy Cập: {error_msg[:20]}"
+                err_obj = data.get('error', {})
+                err_str = str(err_obj)
+                if 'User not found' in err_str or '401' in err_str:
+                    return "! LỖI API: API Key bị khóa/sai. Hãy nhập Key mới ở Cài Đặt!"
+                return f"! LỖI API: {str(err_obj.get('message', err_obj))[:30]}"
         except Exception as e:
             print("[NETWORK ERROR]", e)
             return "! Lỗi Mạng"
@@ -649,11 +688,32 @@ class OverlayApp:
     def on_setting(self, icon, item):
         self.root.after(0, self.open_settings)
 
+    def create_model_menu(self):
+        def set_model(model_name):
+            def inner(icon, item):
+                self.ai_model = model_name
+                self.save_config()
+                print(f"\n[HOT SWAP] 🚀 AI Model changed to: {model_name}\n")
+            return inner
+            
+        def is_checked(model_name):
+            def inner(item):
+                return getattr(self, 'ai_model', DEFAULT_AI_MODEL) == model_name
+            return inner
+
+        model_items = []
+        for m in AVAILABLE_MODELS:
+            model_items.append(pystray.MenuItem(m, set_model(m), checked=is_checked(m), radio=True))
+            
+        return pystray.Menu(*model_items)
+
     def setup_tray(self):
         image = self.create_tray_image()
         menu = pystray.Menu(
-            pystray.MenuItem('Setting', self.on_setting),
-            pystray.MenuItem('Quit', self.on_quit)
+            pystray.MenuItem('⚡ Chuyển Đổi Model Nhanh', self.create_model_menu()),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem('Cài Đặt', self.on_setting),
+            pystray.MenuItem('Thoát', self.on_quit)
         )
         self.tray_icon = pystray.Icon("Overlay", image, "Ứng dụng AI Overlay", menu)
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
@@ -750,7 +810,8 @@ class OverlayApp:
         
         tk.Label(tab_ai, text="AI Model (OpenRouter):").grid(row=1, column=0, padx=15, pady=10, sticky='w')
         model_var = tk.StringVar(value=self.ai_model)
-        tk.Entry(tab_ai, textvariable=model_var, width=22).grid(row=1, column=1, sticky='w')
+        model_cb = ttk.Combobox(tab_ai, textvariable=model_var, values=AVAILABLE_MODELS, width=28)
+        model_cb.grid(row=1, column=1, sticky='w')
 
         def apply_settings():
             try:
