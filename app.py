@@ -429,6 +429,7 @@ class OverlayApp:
                 "(2) Identify paraphrases and distractors — TOEIC often uses synonyms/rephrasing in correct answers. "
                 "(3) Watch out for traps: similar-sounding words, partial truths, and options that repeat audio words but have wrong meaning. "
                 "(4) Select the answer that BEST matches the MEANING of what was said, not just the surface words. "
+                "You MUST answer ALL questions heard in the audio — do NOT stop early. If you heard 10 questions, output 10 answers. "
                 'Output ONLY a JSON object: '
                 '{"answers": [{"transcript": "...", "cau_hoi": "1", "dap_an": "A"}, ...]}'
             )
@@ -460,6 +461,7 @@ class OverlayApp:
         payload = {
             "model": self.ai_model,
             "temperature": 0.0,
+            "max_tokens": 4096,
             "messages": [
                 {
                     "role": "system",
