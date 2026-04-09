@@ -42,6 +42,12 @@ if sys.platform == 'win32':
             pass
 
     WH_MOUSE_LL = 14
+    WH_KEYBOARD_LL = 13
+    WM_KEYDOWN = 0x0100
+    VK_CONTROL = 0x11
+    VK_LCONTROL = 0xA2
+    VK_RCONTROL = 0xA3
+    WM_LBUTTONDOWN = 0x0201
     WM_XBUTTONDOWN = 0x020B
     WM_XBUTTONUP = 0x020C
     user32 = ctypes.windll.user32
@@ -50,6 +56,13 @@ if sys.platform == 'win32':
     class MSLLHOOKSTRUCT(ctypes.Structure):
         _fields_ = [("pt", wintypes.POINT),
                     ("mouseData", wintypes.DWORD),
+                    ("flags", wintypes.DWORD),
+                    ("time", wintypes.DWORD),
+                    ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+                    
+    class KBDLLHOOKSTRUCT(ctypes.Structure):
+        _fields_ = [("vkCode", wintypes.DWORD),
+                    ("scanCode", wintypes.DWORD),
                     ("flags", wintypes.DWORD),
                     ("time", wintypes.DWORD),
                     ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
@@ -117,6 +130,7 @@ class OverlayApp:
         self.audio_frames = []
         self.p_audio = None
         self.audio_stream = None
+        self.text_visible = True
         
         self.canvas = tk.Canvas(self.root, bg=self.trans_color, highlightthickness=0)
         self.canvas.pack()
@@ -180,12 +194,26 @@ class OverlayApp:
                             self.mouse5_action_done = True
                             self.root.after(0, self.next_text)
                         return 1
-            return user32.CallNextHookEx(self.hook, nCode, wParam, lParam)
+            return user32.CallNextHookEx(self.hook_mouse, nCode, wParam, lParam)
 
-        self.hook_id = low_level_mouse_handler 
+        @HOOKPROC
+        def low_level_keyboard_handler(nCode, wParam, lParam):
+            if nCode >= 0:
+                if wParam == WM_KEYDOWN:
+                    struct = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT))[0]
+                    vk_code = struct.vkCode
+                    if vk_code in (VK_CONTROL, VK_LCONTROL, VK_RCONTROL):
+                        self.root.after(0, self.toggle_text_visibility)
+            return user32.CallNextHookEx(self.hook_kbd, nCode, wParam, lParam)
+
+        self.mouse_hook_id = low_level_mouse_handler 
+        self.kbd_hook_id = low_level_keyboard_handler
+        
         kernel32.GetModuleHandleW.restype = wintypes.HMODULE
         hMod = kernel32.GetModuleHandleW(None)
-        self.hook = user32.SetWindowsHookExW(WH_MOUSE_LL, self.hook_id, hMod, 0)
+        
+        self.hook_mouse = user32.SetWindowsHookExW(WH_MOUSE_LL, self.mouse_hook_id, hMod, 0)
+        self.hook_kbd = user32.SetWindowsHookExW(WH_KEYBOARD_LL, self.kbd_hook_id, hMod, 0)
         
         msg = wintypes.MSG()
         while user32.GetMessageW(ctypes.byref(msg), 0, 0, 0) != 0:
@@ -412,25 +440,28 @@ class OverlayApp:
             return "! Lỗi: Không có file Ảnh/Âm thanh"
             
         text_prompt = (
-            "Identify ALL complete English multiple-choice questions in the image. "
-            "For EACH question, internally reason step-by-step: "
-            "(1) What grammar rule, vocabulary pattern, or reading comprehension skill is tested? "
-            "(2) Eliminate obviously wrong options first. "
-            "(3) Choose the BEST answer among remaining options. "
+            "Identify ALL complete multiple-choice questions in the image. "
+            "For EACH question, you MUST internally reason step-by-step before answering: "
+            "(1) Read the question stem and ALL options carefully — do not skim. "
+            "(2) Determine the subject/skill being tested. "
+            "(3) Eliminate WRONG options one by one with a clear reason for each elimination. "
+            "(4) Among remaining options, pick the BEST one. "
+            "(5) Double-check: re-read the question and verify your chosen answer actually fits. "
             'Output ONLY a JSON object: '
             '{"answers": [{"cau_hoi": "12", "dap_an": "A"}, ...]}'
         )
         if audio_path:
             text_prompt = (
-                "Listen to the TOEIC audio VERY carefully, word by word. "
-                "An image MAY be attached — ONLY use it if it shows Part 1 photos or Part 3/4 printed questions/graphics. Otherwise ignore the image entirely. "
-                "For EACH question: "
-                "(1) Transcribe the EXACT words you hear. "
-                "(2) Identify paraphrases and distractors — TOEIC often uses synonyms/rephrasing in correct answers. "
-                "(3) Watch out for traps: similar-sounding words, partial truths, and options that repeat audio words but have wrong meaning. "
-                "(4) Select the answer that BEST matches the MEANING of what was said, not just the surface words. "
-                "You MUST answer ALL questions heard in the audio — do NOT stop early. If you heard 10 questions, output 10 answers. "
-                'Output ONLY a JSON object: '
+                "Listen to the audio VERY carefully, replaying key parts mentally. "
+                "An image MAY be attached — ONLY use it if it shows printed questions, graphics, or relevant visual context. Otherwise ignore it. "
+                "For EACH question, reason step-by-step: "
+                "(1) Transcribe the key phrases you hear. "
+                "(2) Identify what the question is actually asking. "
+                "(3) Eliminate wrong options with clear reasoning. "
+                "(4) Be aware: correct answers often PARAPHRASE the audio using synonyms, NOT repeat exact words. Distractors often repeat surface words. "
+                "(5) Double-check your answer against the audio meaning before finalizing. "
+                "You MUST answer ALL questions heard — do NOT stop early. "
+                'Output ONLY a JSON: '
                 '{"answers": [{"transcript": "...", "cau_hoi": "1", "dap_an": "A"}, ...]}'
             )
 
@@ -440,17 +471,22 @@ class OverlayApp:
         })
         
         system_role = (
-            "You are a TOEIC 990-score expert and English language master. "
-            "Your task is to solve English multiple-choice exercises with MAXIMUM accuracy.\n\n"
-            "THINKING PROCESS (internal, do not output):\n"
-            "- Read/listen to the ENTIRE context before answering ANY question.\n"
-            "- For grammar: identify the exact rule (tense, subject-verb agreement, relative clause, conditional, etc.).\n"
-            "- For vocabulary: consider collocations, context clues, and word families.\n"
-            "- For TOEIC Listening: focus on KEY INFORMATION (who, what, where, when, why, how). "
-            "Be aware that correct answers often PARAPHRASE the audio using synonyms, NOT repeat exact words.\n"
-            "- For Part 1: describe what you SEE in the photo, then match to audio descriptions.\n"
-            "- For Part 2: the correct response ANSWERS the question logically; reject responses that merely repeat words.\n"
-            "- For Part 3&4: read printed questions FIRST (if visible in image), then listen for specific details.\n\n"
+            "You are a world-class exam solver with PhD-level expertise across ALL subjects. "
+            "You have NEVER made an error on a multiple-choice exam. Your accuracy is your identity.\n\n"
+            "MANDATORY REASONING PROTOCOL (internal only, never output this):\n"
+            "Step 1 — COMPREHEND: Read/listen to the ENTIRE question + all options before thinking about the answer.\n"
+            "Step 2 — CLASSIFY: What type of question is this? (grammar, vocabulary, reading, listening, math, science, logic, etc.)\n"
+            "Step 3 — ELIMINATE: Go through EACH option (A, B, C, D) and find a specific reason to reject wrong ones. "
+            "If you cannot find a clear reason to reject an option, keep it as a candidate.\n"
+            "Step 4 — DECIDE: Among remaining candidates, choose the one with the STRONGEST evidence.\n"
+            "Step 5 — VERIFY: Re-read the question one more time. Does your answer DIRECTLY and COMPLETELY answer what is asked? "
+            "If there is any doubt, reconsider.\n\n"
+            "COMMON TRAPS TO AVOID:\n"
+            "- Options that repeat words from the question but have wrong meaning.\n"
+            "- Partially correct answers — the BEST answer must be fully correct.\n"
+            "- In listening: correct answers use SYNONYMS/paraphrases, not exact audio words.\n"
+            "- Trick wording: 'always', 'never', 'all', 'none' — these absolutes are often wrong.\n"
+            "- Reading too fast and missing negations (not, except, unlikely).\n\n"
             "OUTPUT RULES:\n"
             "1. Solve ALL complete questions. Skip only incomplete/cropped ones.\n"
             "2. Output ONLY a single raw JSON object, no markdown, no explanation:\n"
@@ -627,10 +663,10 @@ class OverlayApp:
         self.canvas.delete("all")
         font_spec = ('Arial', self.text_size, 'bold')
         
-        border_thick = 4 if self.show_border else 0
-        pad = border_thick * 2
+        border_thick = max(2, self.text_size // 15) if self.show_border else 0
+        pad = border_thick * 2 + 10
         
-        text_id = self.canvas.create_text(border_thick, border_thick, text=self.text_str, font=font_spec, anchor='nw')
+        text_id = self.canvas.create_text(border_thick + 5, border_thick + 5, text=self.text_str, font=font_spec, anchor='nw')
         bbox = self.canvas.bbox(text_id)
         
         if bbox:
@@ -639,13 +675,18 @@ class OverlayApp:
             self.canvas.config(width=w, height=h)
         
         self.canvas.delete("all")
-        x, y = border_thick, border_thick
+        x, y = border_thick + 5, border_thick + 5
         
         if self.show_border:
-            for dx in [-border_thick, 0, border_thick]:
-                for dy in [-border_thick, 0, border_thick]:
-                    if dx != 0 or dy != 0:
-                        self.canvas.create_text(x + dx, y + dy, text=self.text_str, font=font_spec, fill='black', anchor='nw')
+            # Vẽ outline tròn đều bằng cách quét các góc
+            import math
+            points = 16  # số điểm quét quanh 1 vòng tròn
+            for r in range(1, border_thick + 1):
+                for i in range(points):
+                    angle = (2 * math.pi * i) / points
+                    dx = int(r * math.cos(angle))
+                    dy = int(r * math.sin(angle))
+                    self.canvas.create_text(x + dx, y + dy, text=self.text_str, font=font_spec, fill='black', anchor='nw')
                         
         self.canvas.create_text(x, y, text=self.text_str, font=font_spec, fill=self.text_color, anchor='nw')
         self.root.update_idletasks()
@@ -685,6 +726,16 @@ class OverlayApp:
         self.rect_win.attributes('-topmost', True)
         self.rect_win.lift()
         self.root.after(1000, self.keep_on_top)
+
+    def toggle_text_visibility(self):
+        self.text_visible = not self.text_visible
+        if self.text_visible:
+            self.update_text_render()
+            self.update_geometry()
+        else:
+            self.canvas.delete("all")
+            self.canvas.config(width=1, height=1)
+            self.root.geometry("1x1+0+0")
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -771,8 +822,10 @@ class OverlayApp:
         return image
 
     def on_quit(self, icon, item):
-        if hasattr(self, 'hook'):
-            user32.UnhookWindowsHookEx(self.hook)
+        if hasattr(self, 'hook_mouse'):
+            user32.UnhookWindowsHookEx(self.hook_mouse)
+        if hasattr(self, 'hook_kbd'):
+            user32.UnhookWindowsHookEx(self.hook_kbd)
         icon.stop()
         self.root.quit()
 
